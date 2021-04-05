@@ -1,6 +1,61 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, LockResult, RwLockReadGuard};
 
 use crate::traits::ListItem;
+use rspotify::model::page::Page;
+
+pub type FetchPageFn<I> = dyn Fn(u32) -> Option<Page<I>>;
+pub struct ResultPage<I> {
+    offset: u32,
+    limit: usize,
+    total: u32,
+    pub items: Arc<RwLock<Vec<I>>>,
+    fetch_page: Arc<FetchPageFn<I>>,
+}
+
+impl<I> ResultPage<I> {
+    pub fn new(
+        offset: u32,
+        limit: usize,
+        fetch_page: Arc<FetchPageFn<I>>,
+    ) -> Option<ResultPage<I>> {
+        if let Some(first_page) = fetch_page(offset) {
+            let result = ResultPage {
+                offset,
+                limit,
+                total: first_page.total,
+                items: Arc::new(RwLock::new(first_page.items)),
+                fetch_page: fetch_page.clone(),
+            };
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.read().unwrap().len()
+    }
+
+    pub fn at_end(&self) -> bool {
+        (self.offset + self.limit as u32) >= self.total
+    }
+
+    pub fn next(&mut self) -> bool {
+        let offset = self.offset + self.limit as u32;
+        if !self.at_end() {
+            if let Some(next_page) = (self.fetch_page)(offset) {
+                self.offset = offset;
+                self.items.write().unwrap().extend(next_page.items);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+}
+
 
 pub type Paginator<I> = Box<dyn Fn(Arc<RwLock<Vec<I>>>) + Send + Sync>;
 

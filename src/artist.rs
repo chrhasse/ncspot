@@ -41,23 +41,19 @@ impl Artist {
             }
         } else if let Some(ref artist_id) = self.id {
             let mut collected_ids: Vec<String> = Vec::new();
-            let mut offset = 0;
-            while let Some(sas) = spotify.artist_albums(artist_id, 50, offset) {
-                let items_len = sas.items.len() as u32;
-                debug!("got {} albums", items_len);
+            if let Some(mut new_page) = spotify.artist_albums(artist_id) {
+                while !new_page.at_end() {
+                    debug!("got {} albums", new_page.len());
+                    new_page.next();
+                }
 
-                for sa in sas.items {
+                for sa in new_page.items.read().unwrap().iter() {
                     if Some("appears_on") == sa.album_group.as_deref() {
                         continue;
                     }
-                    if let Some(album_id) = sa.id {
-                        collected_ids.push(album_id);
+                    if let Some(album_id) = &sa.id {
+                        collected_ids.push(album_id.clone());
                     }
-                }
-
-                match sas.next {
-                    Some(_) => offset += items_len,
-                    None => break,
                 }
             }
 

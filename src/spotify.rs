@@ -49,8 +49,10 @@ use crate::playable::Playable;
 use crate::spotify_worker::{Worker, WorkerCommand};
 use crate::track::Track;
 
+use crate::ui::pagination::{Pagination, ResultPage};
 use rspotify::model::recommend::Recommendations;
 use rspotify::model::show::{FullEpisode, FullShow, Show, SimplifiedEpisode};
+use crate::traits::ListItem;
 
 pub const VOLUME_PERCENT: u16 = ((u16::max_value() as f64) * 1.0 / 100.0) as u16;
 
@@ -573,15 +575,16 @@ impl Spotify {
         self.api_with_retry(|api| api.album_track(album_id, limit, offset))
     }
 
-    pub fn artist_albums(
-        &self,
-        artist_id: &str,
-        limit: u32,
-        offset: u32,
-    ) -> Option<Page<SimplifiedAlbum>> {
-        self.api_with_retry(|api| {
-            api.artist_albums(artist_id, None, self.country, Some(limit), Some(offset))
-        })
+    pub fn artist_albums(&self, artist_id: &str) -> Option<ResultPage<SimplifiedAlbum>> {
+        let spotify = self.clone();
+        let artist_id = artist_id.to_string();
+        let fetch_page = move |offset: u32| {
+            spotify.api_with_retry(|api| {
+                api.artist_albums(&artist_id, None, spotify.country, Some(50), Some(offset))
+            })
+        };
+
+        ResultPage::new(0, 50, Arc::new(fetch_page))
     }
 
     pub fn show_episodes(&self, show_id: &str, offset: u32) -> Option<Page<SimplifiedEpisode>> {

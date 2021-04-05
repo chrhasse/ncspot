@@ -4,6 +4,7 @@ use std::thread;
 use cursive::view::ViewWrapper;
 use cursive::Cursive;
 
+use crate::album::Album;
 use crate::artist::Artist;
 use crate::command::Command;
 use crate::commands::CommandResult;
@@ -24,13 +25,32 @@ impl ArtistView {
         let mut artist = artist.clone();
 
         let spotify = queue.get_spotify();
-        artist.load_albums(spotify.clone());
+        // artist.load_albums(spotify.clone());
+        //
+        // let albums = if let Some(a) = artist.albums.as_ref() {
+        //     a.clone()
+        // } else {
+        //     Vec::new()
+        // };
 
-        let albums = if let Some(a) = artist.albums.as_ref() {
-            a.clone()
-        } else {
-            Vec::new()
-        };
+        let albums: Arc<RwLock<Vec<Album>>> = Arc::new(RwLock::new(Vec::new()));
+        let albums_view = ListView::new(albums.clone(), queue.clone(), library.clone());
+        {
+            let albums = albums.clone();
+            let albums_pagination = albums_view.get_pagination().clone();
+            let spotify = spotify.clone();
+            if let Some(artist_id) = artist.id.clone() {
+                thread::spawn(move || {
+                    if let Some(page) = spotify.artist_albums(&artist_id) {
+                        let mut a: Vec<Album> = page.items.iter().map(|a| a.into()).collect();
+                        a.sort_by(|a, b| b.year.cmp(&a.year));
+                        albums.write().unwrap().extend(a);
+
+                        // albums_pagination.set(page)
+                    }
+                });
+            }
+        }
 
         let top_tracks: Arc<RwLock<Vec<Track>>> = Arc::new(RwLock::new(Vec::new()));
         {
@@ -85,15 +105,7 @@ impl ArtistView {
             ListView::new(top_tracks, queue.clone(), library.clone()),
         );
 
-        tabs.add_tab(
-            "albums",
-            "Albums",
-            ListView::new(
-                Arc::new(RwLock::new(albums)),
-                queue.clone(),
-                library.clone(),
-            ),
-        );
+        tabs.add_tab("albums", "Albums", albums_view);
 
         tabs.add_tab(
             "related",

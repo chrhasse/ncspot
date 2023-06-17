@@ -3,18 +3,18 @@ use std::thread;
 
 use cursive::view::ViewWrapper;
 use cursive::Cursive;
+use rspotify::model::AlbumType;
 
-use crate::album::Album;
-use crate::artist::Artist;
 use crate::command::Command;
 use crate::commands::CommandResult;
 use crate::library::Library;
+use crate::model::album::Album;
+use crate::model::artist::Artist;
+use crate::model::track::Track;
 use crate::queue::Queue;
-use crate::track::Track;
 use crate::traits::ViewExt;
 use crate::ui::listview::ListView;
 use crate::ui::tabview::TabView;
-use rspotify::senum::AlbumType;
 
 pub struct ArtistView {
     artist: Artist,
@@ -26,9 +26,9 @@ impl ArtistView {
         let spotify = queue.get_spotify();
 
         let albums_view =
-            Self::albums_view(&artist, AlbumType::Album, queue.clone(), library.clone());
+            Self::albums_view(artist, AlbumType::Album, queue.clone(), library.clone());
         let singles_view =
-            Self::albums_view(&artist, AlbumType::Single, queue.clone(), library.clone());
+            Self::albums_view(artist, AlbumType::Single, queue.clone(), library.clone());
 
         let top_tracks: Arc<RwLock<Vec<Track>>> = Arc::new(RwLock::new(Vec::new()));
         {
@@ -38,7 +38,7 @@ impl ArtistView {
             let library = library.clone();
             thread::spawn(move || {
                 if let Some(id) = id {
-                    if let Some(tracks) = spotify.artist_top_tracks(&id) {
+                    if let Some(tracks) = spotify.api.artist_top_tracks(&id) {
                         top_tracks.write().unwrap().extend(tracks);
                         library.trigger_redraw();
                     }
@@ -53,7 +53,7 @@ impl ArtistView {
             let library = library.clone();
             thread::spawn(move || {
                 if let Some(id) = id {
-                    if let Some(artists) = spotify.artist_related_artists(id) {
+                    if let Some(artists) = spotify.api.artist_related_artists(&id) {
                         related.write().unwrap().extend(artists);
                         library.trigger_redraw();
                     }
@@ -68,28 +68,26 @@ impl ArtistView {
 
             tabs.add_tab(
                 "tracks",
-                "Saved Tracks",
                 ListView::new(
                     Arc::new(RwLock::new(tracks)),
                     queue.clone(),
                     library.clone(),
-                ),
+                )
+                .with_title("Saved Tracks"),
             );
         }
 
         tabs.add_tab(
             "top_tracks",
-            "Top 10",
-            ListView::new(top_tracks, queue.clone(), library.clone()),
+            ListView::new(top_tracks, queue.clone(), library.clone()).with_title("Top 10"),
         );
 
-        tabs.add_tab("albums", "Albums", albums_view);
-        tabs.add_tab("singles", "Singles", singles_view);
+        tabs.add_tab("albums", albums_view.with_title("Albums"));
+        tabs.add_tab("singles", singles_view.with_title("Singles"));
 
         tabs.add_tab(
             "related",
-            "Related Artists",
-            ListView::new(related, queue, library),
+            ListView::new(related, queue, library).with_title("Related Artists"),
         );
 
         Self {
@@ -106,7 +104,7 @@ impl ArtistView {
     ) -> ListView<Album> {
         if let Some(artist_id) = &artist.id {
             let spotify = queue.get_spotify();
-            let albums_page = spotify.artist_albums(artist_id, Some(album_type));
+            let albums_page = spotify.api.artist_albums(artist_id, Some(album_type));
             let view = ListView::new(albums_page.items.clone(), queue, library);
             albums_page.apply_pagination(view.get_pagination());
 

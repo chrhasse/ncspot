@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
@@ -9,15 +8,16 @@ use std::sync::{Arc, RwLock};
 use cursive::theme::{ColorStyle, ColorType, PaletteColor};
 use cursive::{Cursive, Printer, Vec2, View};
 use ioctl_rs::{ioctl, TIOCGWINSZ};
+use log::{debug, error};
 
 use crate::command::{Command, GotoMode};
 use crate::commands::CommandResult;
+use crate::config::Config;
 use crate::library::Library;
 use crate::queue::Queue;
 use crate::traits::{IntoBoxedViewExt, ListItem, ViewExt};
 use crate::ui::album::AlbumView;
 use crate::ui::artist::ArtistView;
-use crate::Config;
 
 pub struct CoverView {
     queue: Arc<Queue>,
@@ -151,7 +151,7 @@ impl CoverView {
         if ueberzug.is_none() {
             *ueberzug = Some(
                 std::process::Command::new("ueberzug")
-                    .args(&["layer", "--silent"])
+                    .args(["layer", "--silent"])
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .spawn()?,
@@ -165,8 +165,7 @@ impl CoverView {
     }
 
     fn cache_path(&self, url: String) -> Option<PathBuf> {
-        let mut path = crate::config::cache_path("covers");
-        path.push(url.split("/").last().unwrap());
+        let path = crate::utils::cache_path_for_url(url.clone());
 
         let mut loading = self.loading.write().unwrap();
         if loading.contains(&url) {
@@ -181,7 +180,7 @@ impl CoverView {
 
         let loading_thread = self.loading.clone();
         std::thread::spawn(move || {
-            if let Err(e) = download(url.clone(), path.clone()) {
+            if let Err(e) = crate::utils::download(url.clone(), path.clone()) {
                 error!("Failed to download cover: {}", e);
             }
             let mut loading = loading_thread.write().unwrap();
@@ -205,7 +204,7 @@ impl View for CoverView {
             }
         });
 
-        let cover_url = self.queue.get_current().map(|t| t.cover_url()).flatten();
+        let cover_url = self.queue.get_current().and_then(|t| t.cover_url());
 
         if let Some(url) = cover_url {
             self.draw_cover(url, printer.offset, printer.size);
@@ -232,14 +231,15 @@ impl ViewExt for CoverView {
         match cmd {
             Command::Save => {
                 if let Some(mut track) = self.queue.get_current() {
-                    track.save(self.library.clone());
+                    track.save(&self.library);
                 }
             }
             Command::Delete => {
                 if let Some(mut track) = self.queue.get_current() {
-                    track.unsave(self.library.clone());
+                    track.unsave(&self.library);
                 }
             }
+            #[cfg(feature = "share_clipboard")]
             Command::Share(_mode) => {
                 let url = self
                     .queue
@@ -247,7 +247,6 @@ impl ViewExt for CoverView {
                     .and_then(|t| t.as_listitem().share_url());
 
                 if let Some(url) = url {
-                    #[cfg(feature = "share_clipboard")]
                     crate::sharing::write_share(url);
                 }
 
@@ -260,7 +259,7 @@ impl ViewExt for CoverView {
 
                     match mode {
                         GotoMode::Album => {
-                            if let Some(album) = track.album(queue.clone()) {
+                            if let Some(album) = track.album(&queue) {
                                 let view =
                                     AlbumView::new(queue, library, &album).into_boxed_view_ext();
                                 return Ok(CommandResult::View(view));
@@ -288,15 +287,4 @@ impl ViewExt for CoverView {
 
         Ok(CommandResult::Ignored)
     }
-}
-
-fn download(url: String, path: PathBuf) -> Result<(), std::io::Error> {
-    let mut resp =
-        reqwest::get(&url).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    let mut file = File::create(path)?;
-
-    std::io::copy(&mut resp, &mut file)?;
-    Ok(())
 }

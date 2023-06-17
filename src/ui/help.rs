@@ -17,7 +17,7 @@ pub struct HelpView {
 }
 
 impl HelpView {
-    pub fn new(bindings: HashMap<String, Command>) -> HelpView {
+    pub fn new(bindings: HashMap<String, Vec<Command>>) -> HelpView {
         let mut text = StyledString::styled("Keybindings\n\n", Effect::Bold);
 
         let note = format!(
@@ -30,8 +30,16 @@ impl HelpView {
         keys.sort();
 
         for key in keys {
-            let command = &bindings[key];
-            let binding = format!("{} -> {}\n", key, command);
+            let commands = &bindings[key];
+            let binding = format!(
+                "{} -> {}\n",
+                key,
+                commands
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
             text.append(binding);
         }
 
@@ -62,6 +70,11 @@ impl ViewExt for HelpView {
                             MoveAmount::Extreme => {
                                 self.view.scroll_to_top();
                             }
+                            MoveAmount::Float(scale) => {
+                                let amount = (viewport.height() as f32) * scale;
+                                scroller
+                                    .scroll_to_y(viewport.top().saturating_sub(amount as usize));
+                            }
                             MoveAmount::Integer(amount) => scroller
                                 .scroll_to_y(viewport.top().saturating_sub(*amount as usize)),
                         };
@@ -71,6 +84,11 @@ impl ViewExt for HelpView {
                         match amount {
                             MoveAmount::Extreme => {
                                 self.view.scroll_to_bottom();
+                            }
+                            MoveAmount::Float(scale) => {
+                                let amount = (viewport.height() as f32) * scale;
+                                scroller
+                                    .scroll_to_y(viewport.bottom().saturating_add(amount as usize));
                             }
                             MoveAmount::Integer(amount) => scroller
                                 .scroll_to_y(viewport.bottom().saturating_add(*amount as usize)),

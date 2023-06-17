@@ -1,4 +1,4 @@
-use cursive::traits::{Boxable, Identifiable};
+use cursive::traits::{Nameable, Resizable};
 use cursive::view::{Margins, ViewWrapper};
 use cursive::views::{Dialog, EditView, ScrollView, SelectView};
 use cursive::Cursive;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::command::{Command, MoveMode, ShiftMode};
 use crate::commands::CommandResult;
 use crate::library::Library;
-use crate::playable::Playable;
+use crate::model::playable::Playable;
 use crate::queue::Queue;
 use crate::traits::ViewExt;
 use crate::ui::listview::ListView;
@@ -151,13 +151,13 @@ impl ViewExt for QueueView {
                     ShiftMode::Up if selected > 0 => {
                         self.queue
                             .shift(selected, (selected as i32).saturating_sub(amount) as usize);
-                        self.list.move_focus(-(amount as i32));
+                        self.list.move_focus(-amount);
                         return Ok(CommandResult::Consumed(None));
                     }
                     ShiftMode::Down if selected < len.saturating_sub(1) => {
                         self.queue
                             .shift(selected, min(selected + amount as usize, len - 1));
-                        self.list.move_focus(amount as i32);
+                        self.list.move_focus(amount);
                         return Ok(CommandResult::Consumed(None));
                     }
                     _ => {}
@@ -172,6 +172,7 @@ impl ViewExt for QueueView {
                 if let Some(playing) = self.queue.get_current_index() {
                     self.list.move_focus_to(playing);
                 }
+                return Ok(CommandResult::Consumed(None));
             }
             _ => {}
         }

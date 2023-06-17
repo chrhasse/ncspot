@@ -2,29 +2,29 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::application::UserData;
+use crate::command::{
+    parse, Command, GotoMode, JumpMode, MoveAmount, MoveMode, SeekDirection, ShiftMode, TargetMode,
+};
 use crate::config::Config;
 use crate::events::EventManager;
+use crate::ext_traits::CursiveExt;
 use crate::library::Library;
 use crate::queue::{Queue, RepeatSetting};
 use crate::spotify::{Spotify, VOLUME_PERCENT};
 use crate::traits::{IntoBoxedViewExt, ViewExt};
-use crate::ui::contextmenu::ContextMenu;
+use crate::ui::contextmenu::{
+    AddToPlaylistMenu, ContextMenu, SelectArtistActionMenu, SelectArtistMenu,
+};
 use crate::ui::help::HelpView;
 use crate::ui::layout::Layout;
 use crate::ui::modal::Modal;
 use crate::ui::search_results::SearchResultsView;
-use crate::UserData;
-use crate::{
-    command::{
-        parse, Command, GotoMode, JumpMode, MoveAmount, MoveMode, SeekDirection, ShiftMode,
-        TargetMode,
-    },
-    ui::contextmenu::AddToPlaylistMenu,
-};
 use cursive::event::{Event, Key};
 use cursive::traits::View;
 use cursive::views::Dialog;
 use cursive::Cursive;
+use log::{debug, error, info};
 use std::cell::RefCell;
 
 pub enum CommandResult {
@@ -36,7 +36,7 @@ pub enum CommandResult {
 
 pub struct CommandManager {
     aliases: HashMap<String, String>,
-    bindings: RefCell<HashMap<String, Command>>,
+    bindings: RefCell<HashMap<String, Vec<Command>>>,
     spotify: Spotify,
     queue: Arc<Queue>,
     library: Arc<Library>,
@@ -52,7 +52,7 @@ impl CommandManager {
         config: Arc<Config>,
         events: EventManager,
     ) -> CommandManager {
-        let bindings = RefCell::new(Self::get_bindings(config.clone()));
+        let bindings = RefCell::new(Self::get_bindings(&config));
         CommandManager {
             aliases: HashMap::new(),
             bindings,
@@ -64,7 +64,7 @@ impl CommandManager {
         }
     }
 
-    pub fn get_bindings(config: Arc<Config>) -> HashMap<String, Command> {
+    pub fn get_bindings(config: &Config) -> HashMap<String, Vec<Command>> {
         let config = config.values();
         let mut kb = if config.default_keybindings.unwrap_or(true) {
             Self::default_keybindings()
@@ -73,12 +73,18 @@ impl CommandManager {
         };
         let custom_bindings: Option<HashMap<String, String>> = config.keybindings.clone();
 
-        for (key, command) in custom_bindings.unwrap_or_default() {
-            if let Some(command) = parse(&command) {
-                info!("Custom keybinding: {} -> {:?}", key, command);
-                kb.insert(key, command);
-            } else {
-                error!("Invalid command for key {}: {}", key, command);
+        for (key, commands) in custom_bindings.unwrap_or_default() {
+            match parse(&commands) {
+                Ok(cmds) => {
+                    info!("Custom keybinding: {} -> {:?}", key, cmds);
+                    kb.insert(key, cmds);
+                }
+                Err(err) => {
+                    error!(
+                        "Invalid command(s) for key {}-\"{}\": {}",
+                        key, commands, err
+                    );
+                }
             }
         }
 
@@ -120,6 +126,11 @@ impl CommandManager {
                 });
                 self.config.save_state();
                 s.quit();
+                Ok(None)
+            }
+            Command::Redraw => {
+                info!("Redrawing screen");
+                s.clear();
                 Ok(None)
             }
             Command::Stop => {
@@ -210,13 +221,12 @@ impl CommandManager {
 
                 // update bindings
                 self.unregister_keybindings(s);
-                self.bindings
-                    .replace(Self::get_bindings(self.config.clone()));
+                self.bindings.replace(Self::get_bindings(&self.config));
                 self.register_keybindings(s);
                 Ok(None)
             }
             Command::NewPlaylist(name) => {
-                match self.spotify.create_playlist(name, None, None) {
+                match self.spotify.api.create_playlist(name, None, None) {
                     Some(_) => self.library.update_library(),
                     None => error!("could not create playlist {}", name),
                 }
@@ -251,19 +261,42 @@ impl CommandManager {
                 s.quit();
                 Ok(None)
             }
-            Command::Jump(_)
-            | Command::Move(_, _)
-            | Command::Shift(_, _)
-            | Command::Play
+            Command::Execute(cmd) => {
+                log::info!("Executing command: {}", cmd);
+                let cmd = std::ffi::CString::new(cmd.clone()).unwrap();
+                let result = unsafe { libc::system(cmd.as_ptr()) };
+                log::info!("Exit code: {}", result);
+                Ok(None)
+            }
+            Command::Reconnect => {
+                self.spotify.shutdown();
+                Ok(None)
+            }
+
+            Command::Queue
             | Command::PlayNext
-            | Command::Queue
+            | Command::Play
             | Command::Save
+            | Command::SaveQueue
             | Command::Delete
+            | Command::Focus(_)
             | Command::Back
             | Command::Open(_)
+            | Command::Goto(_)
+            | Command::Move(_, _)
+            | Command::Shift(_, _)
+            | Command::Jump(_)
             | Command::Insert(_)
-            | Command::Goto(_) => Ok(None),
-            _ => Err("Unknown Command".into()),
+            | Command::ShowRecommendations(_)
+            | Command::Sort(_, _) => Err(format!(
+                "The command \"{}\" is unsupported in this view",
+                cmd.basename()
+            )),
+            #[cfg(feature = "share_clipboard")]
+            Command::Share(_) => Err(format!(
+                "The command \"{}\" is unsupported in this view",
+                cmd.basename()
+            )),
         }
     }
 
@@ -272,11 +305,14 @@ impl CommandManager {
             contextmenu.on_command(s, cmd)?
         } else if let Some(mut add_track_menu) = s.find_name::<AddToPlaylistMenu>("addtrackmenu") {
             add_track_menu.on_command(s, cmd)?
+        } else if let Some(mut select_artist) = s.find_name::<SelectArtistMenu>("selectartist") {
+            select_artist.on_command(s, cmd)?
+        } else if let Some(mut select_artist_action) =
+            s.find_name::<SelectArtistActionMenu>("selectartistaction")
+        {
+            select_artist_action.on_command(s, cmd)?
         } else {
-            let mut main = s
-                .find_name::<Layout>("main")
-                .expect("could not find layout");
-            main.on_command(s, cmd)?
+            s.on_layout(|siv, mut l| l.on_command(siv, cmd))?
         };
 
         if let CommandResult::Consumed(output) = local {
@@ -309,11 +345,13 @@ impl CommandManager {
         &self,
         cursive: &mut Cursive,
         event: E,
-        command: Command,
+        commands: Vec<Command>,
     ) {
         cursive.add_global_callback(event, move |s| {
             if let Some(data) = s.user_data::<UserData>().cloned() {
-                data.cmd.handle(s, command.clone());
+                for command in commands.clone().into_iter() {
+                    data.cmd.handle(s, command);
+                }
             }
         });
     }
@@ -322,7 +360,7 @@ impl CommandManager {
         let kb = self.bindings.borrow();
 
         for (k, _v) in kb.iter() {
-            if let Some(binding) = Self::parse_keybinding(&k) {
+            if let Some(binding) = Self::parse_keybinding(k) {
                 cursive.clear_global_callbacks(binding);
             }
         }
@@ -332,132 +370,178 @@ impl CommandManager {
         let kb = self.bindings.borrow();
 
         for (k, v) in kb.iter() {
-            if let Some(binding) = Self::parse_keybinding(&k) {
+            if let Some(binding) = Self::parse_keybinding(k) {
                 self.register_keybinding(cursive, binding, v.clone());
             } else {
-                error!("Could not parse keybinding: \"{}\"", &k);
+                error!("Could not parse keybinding: \"{}\"", k);
             }
         }
     }
 
-    fn default_keybindings() -> HashMap<String, Command> {
+    fn default_keybindings() -> HashMap<String, Vec<Command>> {
         let mut kb = HashMap::new();
 
-        kb.insert("q".into(), Command::Quit);
-        kb.insert("Shift+p".into(), Command::TogglePlay);
-        kb.insert("Shift+u".into(), Command::UpdateLibrary);
-        kb.insert("Shift+s".into(), Command::Stop);
-        kb.insert("<".into(), Command::Previous);
-        kb.insert(">".into(), Command::Next);
-        kb.insert("c".into(), Command::Clear);
-        kb.insert("Space".into(), Command::Queue);
-        kb.insert(".".into(), Command::PlayNext);
-        kb.insert("Enter".into(), Command::Play);
-        kb.insert("n".into(), Command::Jump(JumpMode::Next));
-        kb.insert("Shift+n".into(), Command::Jump(JumpMode::Previous));
-        kb.insert("s".into(), Command::Save);
-        kb.insert("Ctrl+s".into(), Command::SaveQueue);
-        kb.insert("d".into(), Command::Delete);
-        kb.insert("f".into(), Command::Seek(SeekDirection::Relative(1000)));
-        kb.insert("b".into(), Command::Seek(SeekDirection::Relative(-1000)));
+        kb.insert("q".into(), vec![Command::Quit]);
+        kb.insert("Ctrl+l".into(), vec![Command::Redraw]);
+        kb.insert("Shift+p".into(), vec![Command::TogglePlay]);
+        kb.insert("Shift+u".into(), vec![Command::UpdateLibrary]);
+        kb.insert("Shift+s".into(), vec![Command::Stop]);
+        kb.insert("<".into(), vec![Command::Previous]);
+        kb.insert(">".into(), vec![Command::Next]);
+        kb.insert("c".into(), vec![Command::Clear]);
+        kb.insert(
+            "Space".into(),
+            vec![
+                Command::Queue,
+                Command::Move(MoveMode::Down, Default::default()),
+            ],
+        );
+        kb.insert(
+            ".".into(),
+            vec![
+                Command::PlayNext,
+                Command::Move(MoveMode::Down, Default::default()),
+            ],
+        );
+        kb.insert("Enter".into(), vec![Command::Play]);
+        kb.insert("n".into(), vec![Command::Jump(JumpMode::Next)]);
+        kb.insert("Shift+n".into(), vec![Command::Jump(JumpMode::Previous)]);
+        kb.insert("s".into(), vec![Command::Save]);
+        kb.insert("Ctrl+s".into(), vec![Command::SaveQueue]);
+        kb.insert("d".into(), vec![Command::Delete]);
+        kb.insert(
+            "f".into(),
+            vec![Command::Seek(SeekDirection::Relative(1000))],
+        );
+        kb.insert(
+            "b".into(),
+            vec![Command::Seek(SeekDirection::Relative(-1000))],
+        );
         kb.insert(
             "Shift+f".into(),
-            Command::Seek(SeekDirection::Relative(10000)),
+            vec![Command::Seek(SeekDirection::Relative(10000))],
         );
         kb.insert(
             "Shift+b".into(),
-            Command::Seek(SeekDirection::Relative(-10000)),
+            vec![Command::Seek(SeekDirection::Relative(-10000))],
         );
-        kb.insert("+".into(), Command::VolumeUp(1));
-        kb.insert("]".into(), Command::VolumeUp(5));
-        kb.insert("-".into(), Command::VolumeDown(1));
-        kb.insert("[".into(), Command::VolumeDown(5));
+        kb.insert("+".into(), vec![Command::VolumeUp(1)]);
+        kb.insert("]".into(), vec![Command::VolumeUp(5)]);
+        kb.insert("-".into(), vec![Command::VolumeDown(1)]);
+        kb.insert("[".into(), vec![Command::VolumeDown(5)]);
 
-        kb.insert("r".into(), Command::Repeat(None));
-        kb.insert("z".into(), Command::Shuffle(None));
-        kb.insert("x".into(), Command::Share(TargetMode::Current));
-        kb.insert("Shift+x".into(), Command::Share(TargetMode::Selected));
+        kb.insert("r".into(), vec![Command::Repeat(None)]);
+        kb.insert("z".into(), vec![Command::Shuffle(None)]);
 
-        kb.insert("F1".into(), Command::Focus("queue".into()));
-        kb.insert("F2".into(), Command::Focus("search".into()));
-        kb.insert("F3".into(), Command::Focus("library".into()));
+        #[cfg(feature = "share_clipboard")]
+        {
+            kb.insert("x".into(), vec![Command::Share(TargetMode::Selected)]);
+            kb.insert("Shift+x".into(), vec![Command::Share(TargetMode::Current)]);
+        }
+
+        kb.insert("F1".into(), vec![Command::Focus("queue".into())]);
+        kb.insert("F2".into(), vec![Command::Focus("search".into())]);
+        kb.insert("F3".into(), vec![Command::Focus("library".into())]);
         #[cfg(feature = "cover")]
-        kb.insert("F8".into(), Command::Focus("cover".into()));
-        kb.insert("?".into(), Command::Help);
-        kb.insert("Backspace".into(), Command::Back);
+        kb.insert("F8".into(), vec![Command::Focus("cover".into())]);
+        kb.insert("?".into(), vec![Command::Help]);
+        kb.insert("Backspace".into(), vec![Command::Back]);
 
-        kb.insert("o".into(), Command::Open(TargetMode::Selected));
-        kb.insert("Shift+o".into(), Command::Open(TargetMode::Current));
-        kb.insert("a".into(), Command::Goto(GotoMode::Album));
-        kb.insert("A".into(), Command::Goto(GotoMode::Artist));
+        kb.insert("o".into(), vec![Command::Open(TargetMode::Selected)]);
+        kb.insert("Shift+o".into(), vec![Command::Open(TargetMode::Current)]);
+        kb.insert("a".into(), vec![Command::Goto(GotoMode::Album)]);
+        kb.insert("Shift+a".into(), vec![Command::Goto(GotoMode::Artist)]);
 
-        kb.insert("Up".into(), Command::Move(MoveMode::Up, Default::default()));
+        kb.insert(
+            "m".into(),
+            vec![Command::ShowRecommendations(TargetMode::Selected)],
+        );
+        kb.insert(
+            "Shift+m".into(),
+            vec![Command::ShowRecommendations(TargetMode::Current)],
+        );
+
+        kb.insert(
+            "Up".into(),
+            vec![Command::Move(MoveMode::Up, Default::default())],
+        );
         kb.insert(
             "p".into(),
-            Command::Move(MoveMode::Playing, Default::default()),
+            vec![Command::Move(MoveMode::Playing, Default::default())],
         );
         kb.insert(
             "Down".into(),
-            Command::Move(MoveMode::Down, Default::default()),
+            vec![Command::Move(MoveMode::Down, Default::default())],
         );
         kb.insert(
             "Left".into(),
-            Command::Move(MoveMode::Left, Default::default()),
+            vec![Command::Move(MoveMode::Left, Default::default())],
         );
         kb.insert(
             "Right".into(),
-            Command::Move(MoveMode::Right, Default::default()),
+            vec![Command::Move(MoveMode::Right, Default::default())],
         );
         kb.insert(
             "PageUp".into(),
-            Command::Move(MoveMode::Up, MoveAmount::Integer(5)),
+            vec![Command::Move(MoveMode::Up, MoveAmount::Integer(5))],
         );
         kb.insert(
             "PageDown".into(),
-            Command::Move(MoveMode::Down, MoveAmount::Integer(5)),
+            vec![Command::Move(MoveMode::Down, MoveAmount::Integer(5))],
         );
         kb.insert(
             "Home".into(),
-            Command::Move(MoveMode::Up, MoveAmount::Extreme),
+            vec![Command::Move(MoveMode::Up, MoveAmount::Extreme)],
         );
         kb.insert(
             "End".into(),
-            Command::Move(MoveMode::Down, MoveAmount::Extreme),
+            vec![Command::Move(MoveMode::Down, MoveAmount::Extreme)],
         );
-        kb.insert("k".into(), Command::Move(MoveMode::Up, Default::default()));
+        kb.insert(
+            "k".into(),
+            vec![Command::Move(MoveMode::Up, Default::default())],
+        );
         kb.insert(
             "j".into(),
-            Command::Move(MoveMode::Down, Default::default()),
+            vec![Command::Move(MoveMode::Down, Default::default())],
         );
         kb.insert(
             "h".into(),
-            Command::Move(MoveMode::Left, Default::default()),
+            vec![Command::Move(MoveMode::Left, Default::default())],
         );
         kb.insert(
             "l".into(),
-            Command::Move(MoveMode::Right, Default::default()),
+            vec![Command::Move(MoveMode::Right, Default::default())],
         );
 
         kb.insert(
             "Ctrl+p".into(),
-            Command::Move(MoveMode::Up, Default::default()),
+            vec![Command::Move(MoveMode::Up, Default::default())],
         );
         kb.insert(
             "Ctrl+n".into(),
-            Command::Move(MoveMode::Down, Default::default()),
+            vec![Command::Move(MoveMode::Down, Default::default())],
         );
         kb.insert(
             "Ctrl+a".into(),
-            Command::Move(MoveMode::Left, Default::default()),
+            vec![Command::Move(MoveMode::Left, Default::default())],
         );
         kb.insert(
             "Ctrl+e".into(),
-            Command::Move(MoveMode::Right, Default::default()),
+            vec![Command::Move(MoveMode::Right, Default::default())],
         );
 
-        kb.insert("Shift+Up".into(), Command::Shift(ShiftMode::Up, None));
-        kb.insert("Shift+Down".into(), Command::Shift(ShiftMode::Down, None));
-        kb.insert("Ctrl+v".into(), Command::Insert(None));
+        kb.insert("Shift+Up".into(), vec![Command::Shift(ShiftMode::Up, None)]);
+        kb.insert(
+            "Shift+Down".into(),
+            vec![Command::Shift(ShiftMode::Down, None)],
+        );
+
+        #[cfg(feature = "share_clipboard")]
+        kb.insert(
+            "Ctrl+v".into(),
+            vec![Command::Insert(crate::command::InsertSource::Clipboard)],
+        );
 
         kb
     }
@@ -522,7 +606,7 @@ impl CommandManager {
                 None
             }
         } else {
-            Some(Self::parse_key(&kb))
+            Some(Self::parse_key(kb))
         }
     }
 }

@@ -2,25 +2,25 @@
 
 use cursive::direction::Orientation;
 use cursive::event::{AnyCb, Event, EventResult, Key};
-use cursive::traits::{Boxable, Finder, Identifiable, View};
+use cursive::traits::{Finder, Nameable, View};
 use cursive::view::{IntoBoxedView, Selector, ViewNotFound, ViewWrapper};
 use cursive::views::{EditView, NamedView, ViewRef};
 use cursive::{Cursive, Printer, Vec2};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::album::Album;
-use crate::artist::Artist;
 use crate::command::{Command, MoveMode};
 use crate::commands::CommandResult;
-use crate::episode::Episode;
 use crate::events::EventManager;
 use crate::library::Library;
-use crate::playlist::Playlist;
+use crate::model::album::Album;
+use crate::model::artist::Artist;
+use crate::model::episode::Episode;
+use crate::model::playlist::Playlist;
+use crate::model::show::Show;
+use crate::model::track::Track;
 use crate::queue::Queue;
-use crate::show::Show;
 use crate::spotify::{Spotify, UriType};
-use crate::track::Track;
 use crate::traits::{ListItem, ViewExt};
 use crate::ui::layout::Layout;
 use crate::ui::listview::ListView;
@@ -28,7 +28,6 @@ use crate::ui::pagination::Pagination;
 use crate::ui::search_results::SearchResultsView;
 use crate::ui::tabview::TabView;
 use rspotify::model::search::SearchResult;
-use rspotify::senum::SearchType;
 
 pub struct SearchView {
     edit: NamedView<EditView>,
@@ -95,14 +94,14 @@ impl View for SearchView {
         }
     }
 
-    fn call_on_any<'a>(&mut self, selector: &Selector<'_>, callback: AnyCb<'a>) {
+    fn call_on_any(&mut self, selector: &Selector<'_>, callback: AnyCb<'_>) {
         self.edit.call_on_any(selector, &mut |v| callback(v));
     }
 
-    fn focus_view(&mut self, selector: &Selector<'_>) -> Result<(), ViewNotFound> {
+    fn focus_view(&mut self, selector: &Selector<'_>) -> Result<EventResult, ViewNotFound> {
         if let Selector::Name(s) = selector {
             self.edit_focused = s == &"search_edit";
-            Ok(())
+            Ok(EventResult::Consumed(None))
         } else {
             Err(ViewNotFound)
         }

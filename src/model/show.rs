@@ -1,11 +1,12 @@
-use crate::episode::Episode;
 use crate::library::Library;
-use crate::playable::Playable;
+use crate::model::episode::Episode;
+use crate::model::playable::Playable;
 use crate::queue::Queue;
 use crate::spotify::Spotify;
 use crate::traits::{IntoBoxedViewExt, ListItem, ViewExt};
 use crate::ui::show::ShowView;
 use rspotify::model::show::{FullShow, SimplifiedShow};
+use rspotify::model::Id;
 use std::fmt;
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ impl Show {
             return;
         }
 
-        let episodes_result = spotify.show_episodes(&self.id);
+        let episodes_result = spotify.api.show_episodes(&self.id);
         while !episodes_result.at_end() {
             episodes_result.next();
         }
@@ -39,8 +40,8 @@ impl Show {
 impl From<&SimplifiedShow> for Show {
     fn from(show: &SimplifiedShow) -> Self {
         Self {
-            id: show.id.clone(),
-            uri: show.uri.clone(),
+            id: show.id.id().to_string(),
+            uri: show.id.uri(),
             name: show.name.clone(),
             publisher: show.publisher.clone(),
             description: show.description.clone(),
@@ -53,8 +54,8 @@ impl From<&SimplifiedShow> for Show {
 impl From<&FullShow> for Show {
     fn from(show: &FullShow) -> Self {
         Self {
-            id: show.id.clone(),
-            uri: show.uri.clone(),
+            id: show.id.id().to_string(),
+            uri: show.id.uri(),
             name: show.name.clone(),
             publisher: show.publisher.clone(),
             description: show.description.clone(),
@@ -71,18 +72,18 @@ impl fmt::Display for Show {
 }
 
 impl ListItem for Show {
-    fn is_playing(&self, _queue: Arc<Queue>) -> bool {
+    fn is_playing(&self, _queue: &Queue) -> bool {
         false
     }
 
-    fn display_left(&self) -> String {
-        format!("{}", self)
+    fn display_left(&self, _library: &Library) -> String {
+        format!("{self}")
     }
 
-    fn display_right(&self, library: Arc<Library>) -> String {
+    fn display_right(&self, library: &Library) -> String {
         let saved = if library.is_saved_show(self) {
             if library.cfg.values().use_nerdfont.unwrap_or(false) {
-                "\u{f62b} "
+                "\u{f012c} "
             } else {
                 "✓ "
             }
@@ -92,7 +93,7 @@ impl ListItem for Show {
         saved.to_owned()
     }
 
-    fn play(&mut self, queue: Arc<Queue>) {
+    fn play(&mut self, queue: &Queue) {
         self.load_all_episodes(queue.get_spotify());
 
         let playables = self
@@ -103,11 +104,11 @@ impl ListItem for Show {
             .map(|ep| Playable::Episode(ep.clone()))
             .collect();
 
-        let index = queue.append_next(playables);
+        let index = queue.append_next(&playables);
         queue.play(index, true, true);
     }
 
-    fn play_next(&mut self, queue: Arc<Queue>) {
+    fn play_next(&mut self, queue: &Queue) {
         self.load_all_episodes(queue.get_spotify());
 
         if let Some(episodes) = self.episodes.as_ref() {
@@ -117,7 +118,7 @@ impl ListItem for Show {
         }
     }
 
-    fn queue(&mut self, queue: Arc<Queue>) {
+    fn queue(&mut self, queue: &Queue) {
         self.load_all_episodes(queue.get_spotify());
 
         for ep in self.episodes.as_ref().unwrap_or(&Vec::new()) {
@@ -125,7 +126,7 @@ impl ListItem for Show {
         }
     }
 
-    fn toggle_saved(&mut self, library: Arc<Library>) {
+    fn toggle_saved(&mut self, library: &Library) {
         if library.is_saved_show(self) {
             self.unsave(library);
         } else {
@@ -133,11 +134,11 @@ impl ListItem for Show {
         }
     }
 
-    fn save(&mut self, library: Arc<Library>) {
+    fn save(&mut self, library: &Library) {
         library.save_show(self);
     }
 
-    fn unsave(&mut self, library: Arc<Library>) {
+    fn unsave(&mut self, library: &Library) {
         library.unsave_show(self);
     }
 
@@ -147,6 +148,16 @@ impl ListItem for Show {
 
     fn share_url(&self) -> Option<String> {
         Some(format!("https://open.spotify.com/show/{}", self.id))
+    }
+
+    #[inline]
+    fn is_saved(&self, library: &Library) -> Option<bool> {
+        Some(library.is_saved_show(self))
+    }
+
+    #[inline]
+    fn is_playable(&self) -> bool {
+        true
     }
 
     fn as_listitem(&self) -> Box<dyn ListItem> {

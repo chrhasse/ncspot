@@ -4,30 +4,30 @@ use cursive::view::{View, ViewWrapper};
 use cursive::views::NamedView;
 use cursive::Cursive;
 
-use crate::album::Album;
-use crate::artist::Artist;
 use crate::command::Command;
 use crate::commands::CommandResult;
 use crate::library::Library;
+use crate::model::album::Album;
+use crate::model::artist::Artist;
+use crate::model::track::Track;
 use crate::queue::Queue;
-use crate::track::Track;
 
 pub trait ListItem: Sync + Send + 'static {
-    fn is_playing(&self, queue: Arc<Queue>) -> bool;
-    fn display_left(&self) -> String;
-    fn display_center(&self, _library: Arc<Library>) -> String {
+    fn is_playing(&self, queue: &Queue) -> bool;
+    fn display_left(&self, library: &Library) -> String;
+    fn display_center(&self, _library: &Library) -> String {
         "".to_string()
     }
-    fn display_right(&self, library: Arc<Library>) -> String;
-    fn play(&mut self, queue: Arc<Queue>);
-    fn queue(&mut self, queue: Arc<Queue>);
-    fn play_next(&mut self, queue: Arc<Queue>);
-    fn toggle_saved(&mut self, library: Arc<Library>);
-    fn save(&mut self, library: Arc<Library>);
-    fn unsave(&mut self, library: Arc<Library>);
+    fn display_right(&self, library: &Library) -> String;
+    fn play(&mut self, queue: &Queue);
+    fn play_next(&mut self, queue: &Queue);
+    fn queue(&mut self, queue: &Queue);
+    fn toggle_saved(&mut self, library: &Library);
+    fn save(&mut self, library: &Library);
+    fn unsave(&mut self, library: &Library);
     fn open(&self, queue: Arc<Queue>, library: Arc<Library>) -> Option<Box<dyn ViewExt>>;
     fn open_recommendations(
-        &self,
+        &mut self,
         _queue: Arc<Queue>,
         _library: Arc<Library>,
     ) -> Option<Box<dyn ViewExt>> {
@@ -35,7 +35,7 @@ pub trait ListItem: Sync + Send + 'static {
     }
     fn share_url(&self) -> Option<String>;
 
-    fn album(&self, _queue: Arc<Queue>) -> Option<Album> {
+    fn album(&self, _queue: &Queue) -> Option<Album> {
         None
     }
 
@@ -45,6 +45,17 @@ pub trait ListItem: Sync + Send + 'static {
 
     fn track(&self) -> Option<Track> {
         None
+    }
+
+    #[allow(unused_variables)]
+    #[inline]
+    fn is_saved(&self, library: &Library) -> Option<bool> {
+        None
+    }
+
+    #[inline]
+    fn is_playable(&self) -> bool {
+        false
     }
 
     fn as_listitem(&self) -> Box<dyn ListItem>;

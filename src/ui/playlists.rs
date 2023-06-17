@@ -7,7 +7,7 @@ use cursive::Cursive;
 use crate::command::Command;
 use crate::commands::CommandResult;
 use crate::library::Library;
-use crate::playlist::Playlist;
+use crate::model::playlist::Playlist;
 use crate::queue::Queue;
 use crate::traits::ViewExt;
 use crate::ui::listview::ListView;
@@ -53,6 +53,10 @@ impl ViewWrapper for PlaylistsView {
 }
 
 impl ViewExt for PlaylistsView {
+    fn title(&self) -> String {
+        "Playlists".to_string()
+    }
+
     fn on_command(&mut self, s: &mut Cursive, cmd: &Command) -> Result<CommandResult, String> {
         if let Command::Delete = cmd {
             if let Some(dialog) = self.delete_dialog() {

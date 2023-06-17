@@ -1,14 +1,17 @@
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
+use crate::config;
+use crate::utils::ms_to_hms;
 use chrono::{DateTime, Utc};
 use rspotify::model::album::FullAlbum;
 use rspotify::model::track::{FullTrack, SavedTrack, SimplifiedTrack};
+use rspotify::model::Id;
 
-use crate::album::Album;
-use crate::artist::Artist;
 use crate::library::Library;
-use crate::playable::Playable;
+use crate::model::album::Album;
+use crate::model::artist::Artist;
+use crate::model::playable::Playable;
 use crate::queue::Queue;
 use crate::traits::{IntoBoxedViewExt, ListItem, ViewExt};
 use crate::ui::listview::ListView;
@@ -42,7 +45,7 @@ impl Track {
         let artist_ids = track
             .artists
             .iter()
-            .filter_map(|a| a.id.clone())
+            .filter_map(|a| a.id.as_ref().map(|id| id.id().to_string()))
             .collect::<Vec<String>>();
         let album_artists = album
             .artists
@@ -51,28 +54,26 @@ impl Track {
             .collect::<Vec<String>>();
 
         Self {
-            id: track.id.clone(),
-            uri: track.uri.clone(),
+            id: track.id.as_ref().map(|id| id.id().to_string()),
+            uri: track.id.as_ref().map(|id| id.uri()).unwrap_or_default(),
             title: track.name.clone(),
             track_number: track.track_number,
             disc_number: track.disc_number,
-            duration: track.duration_ms,
+            duration: track.duration.num_milliseconds() as u32,
             artists,
             artist_ids,
             album: Some(album.name.clone()),
-            album_id: Some(album.id.clone()),
+            album_id: Some(album.id.id().to_string()),
             album_artists,
             cover_url: album.images.get(0).map(|img| img.url.clone()),
-            url: track.uri.clone(),
+            url: track.id.as_ref().map(|id| id.url()).unwrap_or_default(),
             added_at: None,
             list_index: 0,
         }
     }
 
     pub fn duration_str(&self) -> String {
-        let minutes = self.duration / 60_000;
-        let seconds = (self.duration / 1000) % 60;
-        format!("{:02}:{:02}", minutes, seconds)
+        ms_to_hms(self.duration)
     }
 }
 
@@ -81,28 +82,28 @@ impl From<&SimplifiedTrack> for Track {
         let artists = track
             .artists
             .iter()
-            .map(|ref artist| artist.name.clone())
+            .map(|artist| artist.name.clone())
             .collect::<Vec<String>>();
         let artist_ids = track
             .artists
             .iter()
-            .filter_map(|a| a.id.clone())
+            .filter_map(|a| a.id.as_ref().map(|a| a.id().to_string()))
             .collect::<Vec<String>>();
 
         Self {
-            id: track.id.clone(),
-            uri: track.uri.clone(),
+            id: track.id.as_ref().map(|id| id.id().to_string()),
+            uri: track.id.as_ref().map(|id| id.uri()).unwrap_or_default(),
             title: track.name.clone(),
             track_number: track.track_number,
             disc_number: track.disc_number,
-            duration: track.duration_ms,
+            duration: track.duration.num_milliseconds() as u32,
             artists,
             artist_ids,
             album: None,
             album_id: None,
             album_artists: Vec::new(),
             cover_url: None,
-            url: track.uri.clone(),
+            url: track.id.as_ref().map(|id| id.url()).unwrap_or_default(),
             added_at: None,
             list_index: 0,
         }
@@ -114,34 +115,34 @@ impl From<&FullTrack> for Track {
         let artists = track
             .artists
             .iter()
-            .map(|ref artist| artist.name.clone())
+            .map(|artist| artist.name.clone())
             .collect::<Vec<String>>();
         let artist_ids = track
             .artists
             .iter()
-            .filter_map(|a| a.id.clone())
+            .filter_map(|a| a.id.as_ref().map(|a| a.id().to_string()))
             .collect::<Vec<String>>();
         let album_artists = track
             .album
             .artists
             .iter()
-            .map(|ref artist| artist.name.clone())
+            .map(|artist| artist.name.clone())
             .collect::<Vec<String>>();
 
         Self {
-            id: track.id.clone(),
-            uri: track.uri.clone(),
+            id: track.id.as_ref().map(|id| id.id().to_string()),
+            uri: track.id.as_ref().map(|id| id.uri()).unwrap_or_default(),
             title: track.name.clone(),
             track_number: track.track_number,
             disc_number: track.disc_number,
-            duration: track.duration_ms,
+            duration: track.duration.num_milliseconds() as u32,
             artists,
             artist_ids,
             album: Some(track.album.name.clone()),
-            album_id: track.album.id.clone(),
+            album_id: track.album.id.as_ref().map(|a| a.id().to_string()),
             album_artists,
             cover_url: track.album.images.get(0).map(|img| img.url.clone()),
-            url: track.uri.clone(),
+            url: track.id.as_ref().map(|id| id.url()).unwrap_or_default(),
             added_at: None,
             list_index: 0,
         }
@@ -175,62 +176,82 @@ impl fmt::Debug for Track {
 }
 
 impl ListItem for Track {
-    fn is_playing(&self, queue: Arc<Queue>) -> bool {
+    fn is_playing(&self, queue: &Queue) -> bool {
         let current = queue.get_current();
         current.map(|t| t.id() == self.id).unwrap_or(false)
     }
 
-    fn as_listitem(&self) -> Box<dyn ListItem> {
-        Box::new(self.clone())
-    }
-
-    fn display_left(&self) -> String {
-        format!("{}", self)
-    }
-
-    fn display_center(&self, library: Arc<Library>) -> String {
-        if library.cfg.values().album_column.unwrap_or(true) {
-            self.album.clone().unwrap_or_default()
+    fn display_left(&self, library: &Library) -> String {
+        let formatting = library
+            .cfg
+            .values()
+            .track_format
+            .clone()
+            .unwrap_or_default();
+        let default = config::TrackFormat::default().left.unwrap();
+        let left = formatting.left.unwrap_or_else(|| default.clone());
+        if left != default {
+            Playable::format(&Playable::Track(self.clone()), &left, library)
         } else {
-            "".to_string()
+            format!("{self}")
         }
     }
 
-    fn display_right(&self, library: Arc<Library>) -> String {
-        let saved = if library.is_saved_track(&Playable::Track(self.clone())) {
-            if library.cfg.values().use_nerdfont.unwrap_or(false) {
-                "\u{f62b} "
-            } else {
-                "✓ "
-            }
+    fn display_center(&self, library: &Library) -> String {
+        let formatting = library
+            .cfg
+            .values()
+            .track_format
+            .clone()
+            .unwrap_or_default();
+        let default = config::TrackFormat::default().center.unwrap();
+        let center = formatting.center.unwrap_or_else(|| default.clone());
+        if center != default {
+            Playable::format(&Playable::Track(self.clone()), &center, library)
         } else {
-            ""
-        };
-        format!("{}{}", saved, self.duration_str())
+            self.album.clone().unwrap_or_default()
+        }
     }
 
-    fn play(&mut self, queue: Arc<Queue>) {
-        let index = queue.append_next(vec![Playable::Track(self.clone())]);
+    fn display_right(&self, library: &Library) -> String {
+        let formatting = library
+            .cfg
+            .values()
+            .track_format
+            .clone()
+            .unwrap_or_default();
+        let default = config::TrackFormat::default().right.unwrap();
+        let right = formatting.right.unwrap_or_else(|| default.clone());
+        if right != default {
+            Playable::format(&Playable::Track(self.clone()), &right, library)
+        } else {
+            let saved = if library.is_saved_track(&Playable::Track(self.clone())) {
+                if library.cfg.values().use_nerdfont.unwrap_or(false) {
+                    "\u{f012c}"
+                } else {
+                    "✓"
+                }
+            } else {
+                ""
+            };
+            format!("{} {}", saved, self.duration_str())
+        }
+    }
+
+    fn play(&mut self, queue: &Queue) {
+        let index = queue.append_next(&vec![Playable::Track(self.clone())]);
         queue.play(index, true, false);
     }
 
-    fn play_next(&mut self, queue: Arc<Queue>) {
+    fn play_next(&mut self, queue: &Queue) {
         queue.insert_after_current(Playable::Track(self.clone()));
     }
 
-    fn queue(&mut self, queue: Arc<Queue>) {
+    fn queue(&mut self, queue: &Queue) {
         queue.append(Playable::Track(self.clone()));
     }
 
-    fn save(&mut self, library: Arc<Library>) {
-        library.save_tracks(vec![self], true);
-    }
-
-    fn unsave(&mut self, library: Arc<Library>) {
-        library.unsave_tracks(vec![self], true);
-    }
-
-    fn toggle_saved(&mut self, library: Arc<Library>) {
+    fn toggle_saved(&mut self, library: &Library) {
         if library.is_saved_track(&Playable::Track(self.clone())) {
             library.unsave_tracks(vec![self], true);
         } else {
@@ -238,12 +259,20 @@ impl ListItem for Track {
         }
     }
 
+    fn save(&mut self, library: &Library) {
+        library.save_tracks(vec![self], true);
+    }
+
+    fn unsave(&mut self, library: &Library) {
+        library.unsave_tracks(vec![self], true);
+    }
+
     fn open(&self, _queue: Arc<Queue>, _library: Arc<Library>) -> Option<Box<dyn ViewExt>> {
         None
     }
 
     fn open_recommendations(
-        &self,
+        &mut self,
         queue: Arc<Queue>,
         library: Arc<Library>,
     ) -> Option<Box<dyn ViewExt>> {
@@ -251,7 +280,8 @@ impl ListItem for Track {
 
         let recommendations: Option<Vec<Track>> = if let Some(id) = &self.id {
             spotify
-                .recommendations(None, None, Some(vec![id.clone()]))
+                .api
+                .recommendations(None, None, Some(vec![id]))
                 .map(|r| r.tracks)
                 .map(|tracks| tracks.iter().map(Track::from).collect())
         } else {
@@ -264,7 +294,7 @@ impl ListItem for Track {
                 queue.clone(),
                 library.clone(),
             )
-            .set_title(format!(
+            .with_title(&format!(
                 "Similar to \"{} - {}\"",
                 self.artists.join(", "),
                 self.title
@@ -276,14 +306,14 @@ impl ListItem for Track {
     fn share_url(&self) -> Option<String> {
         self.id
             .clone()
-            .map(|id| format!("https://open.spotify.com/track/{}", id))
+            .map(|id| format!("https://open.spotify.com/track/{id}"))
     }
 
-    fn album(&self, queue: Arc<Queue>) -> Option<Album> {
+    fn album(&self, queue: &Queue) -> Option<Album> {
         let spotify = queue.get_spotify();
 
         match self.album_id {
-            Some(ref album_id) => spotify.album(&album_id).map(|ref fa| fa.into()),
+            Some(ref album_id) => spotify.api.album(album_id).map(|ref fa| fa.into()),
             None => None,
         }
     }
@@ -300,5 +330,19 @@ impl ListItem for Track {
 
     fn track(&self) -> Option<Track> {
         Some(self.clone())
+    }
+
+    #[inline]
+    fn is_saved(&self, library: &Library) -> Option<bool> {
+        Some(library.is_saved_track(&Playable::Track(self.clone())))
+    }
+
+    #[inline]
+    fn is_playable(&self) -> bool {
+        true
+    }
+
+    fn as_listitem(&self) -> Box<dyn ListItem> {
+        Box::new(self.clone())
     }
 }

@@ -1,8 +1,11 @@
 use crate::library::Library;
-use crate::playable::Playable;
+use crate::model::playable::Playable;
 use crate::queue::Queue;
 use crate::traits::{ListItem, ViewExt};
+use crate::utils::ms_to_hms;
+use chrono::{DateTime, Utc};
 use rspotify::model::show::{FullEpisode, SimplifiedEpisode};
+use rspotify::model::Id;
 use std::fmt;
 use std::sync::Arc;
 
@@ -15,26 +18,28 @@ pub struct Episode {
     pub description: String,
     pub release_date: String,
     pub cover_url: Option<String>,
+    pub added_at: Option<DateTime<Utc>>,
+    pub list_index: usize,
 }
 
 impl Episode {
     pub fn duration_str(&self) -> String {
-        let minutes = self.duration / 60_000;
-        let seconds = (self.duration / 1000) % 60;
-        format!("{:02}:{:02}", minutes, seconds)
+        ms_to_hms(self.duration)
     }
 }
 
 impl From<&SimplifiedEpisode> for Episode {
     fn from(episode: &SimplifiedEpisode) -> Self {
         Self {
-            id: episode.id.clone(),
-            uri: episode.uri.clone(),
-            duration: episode.duration_ms,
+            id: episode.id.id().to_string(),
+            uri: episode.id.uri(),
+            duration: episode.duration.num_milliseconds() as u32,
             name: episode.name.clone(),
             description: episode.description.clone(),
             release_date: episode.release_date.clone(),
             cover_url: episode.images.get(0).map(|img| img.url.clone()),
+            added_at: None,
+            list_index: 0,
         }
     }
 }
@@ -42,13 +47,15 @@ impl From<&SimplifiedEpisode> for Episode {
 impl From<&FullEpisode> for Episode {
     fn from(episode: &FullEpisode) -> Self {
         Self {
-            id: episode.id.clone(),
-            uri: episode.uri.clone(),
-            duration: episode.duration_ms,
+            id: episode.id.id().to_string(),
+            uri: episode.id.uri(),
+            duration: episode.duration.num_milliseconds() as u32,
             name: episode.name.clone(),
             description: episode.description.clone(),
             release_date: episode.release_date.clone(),
             cover_url: episode.images.get(0).map(|img| img.url.clone()),
+            added_at: None,
+            list_index: 0,
         }
     }
 }
@@ -60,39 +67,39 @@ impl fmt::Display for Episode {
 }
 
 impl ListItem for Episode {
-    fn is_playing(&self, queue: Arc<Queue>) -> bool {
+    fn is_playing(&self, queue: &Queue) -> bool {
         let current = queue.get_current();
         current
             .map(|t| t.id() == Some(self.id.clone()))
             .unwrap_or(false)
     }
 
-    fn display_left(&self) -> String {
+    fn display_left(&self, _library: &Library) -> String {
         self.name.clone()
     }
 
-    fn display_right(&self, _library: Arc<Library>) -> String {
+    fn display_right(&self, _library: &Library) -> String {
         format!("{} [{}]", self.duration_str(), self.release_date)
     }
 
-    fn play(&mut self, queue: Arc<Queue>) {
-        let index = queue.append_next(vec![Playable::Episode(self.clone())]);
+    fn play(&mut self, queue: &Queue) {
+        let index = queue.append_next(&vec![Playable::Episode(self.clone())]);
         queue.play(index, true, false);
     }
 
-    fn play_next(&mut self, queue: Arc<Queue>) {
+    fn play_next(&mut self, queue: &Queue) {
         queue.insert_after_current(Playable::Episode(self.clone()));
     }
 
-    fn queue(&mut self, queue: Arc<Queue>) {
+    fn queue(&mut self, queue: &Queue) {
         queue.append(Playable::Episode(self.clone()));
     }
 
-    fn toggle_saved(&mut self, _library: Arc<Library>) {}
+    fn toggle_saved(&mut self, _library: &Library) {}
 
-    fn save(&mut self, _library: Arc<Library>) {}
+    fn save(&mut self, _library: &Library) {}
 
-    fn unsave(&mut self, _library: Arc<Library>) {}
+    fn unsave(&mut self, _library: &Library) {}
 
     fn open(&self, _queue: Arc<Queue>, _library: Arc<Library>) -> Option<Box<dyn ViewExt>> {
         None
@@ -100,6 +107,11 @@ impl ListItem for Episode {
 
     fn share_url(&self) -> Option<String> {
         Some(format!("https://open.spotify.com/episode/{}", self.id))
+    }
+
+    #[inline]
+    fn is_playable(&self) -> bool {
+        true
     }
 
     fn as_listitem(&self) -> Box<dyn ListItem> {

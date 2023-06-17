@@ -1,16 +1,16 @@
-use crate::album::Album;
-use crate::artist::Artist;
 use crate::command::Command;
 use crate::commands::CommandResult;
-use crate::episode::Episode;
 use crate::events::EventManager;
 use crate::library::Library;
-use crate::playlist::Playlist;
+use crate::model::album::Album;
+use crate::model::artist::Artist;
+use crate::model::episode::Episode;
+use crate::model::playlist::Playlist;
+use crate::model::show::Show;
+use crate::model::track::Track;
 use crate::queue::Queue;
-use crate::show::Show;
 use crate::spotify::{Spotify, UriType};
 use crate::spotify_url::SpotifyUrl;
-use crate::track::Track;
 use crate::traits::{ListItem, ViewExt};
 use crate::ui::listview::ListView;
 use crate::ui::pagination::Pagination;
@@ -18,7 +18,7 @@ use crate::ui::tabview::TabView;
 use cursive::view::ViewWrapper;
 use cursive::Cursive;
 use rspotify::model::search::SearchResult;
-use rspotify::senum::SearchType;
+use rspotify::model::SearchType;
 use std::sync::{Arc, RwLock};
 
 pub struct SearchResultsView {
@@ -72,12 +72,12 @@ impl SearchResultsView {
         let pagination_episodes = list_episodes.get_pagination().clone();
 
         let tabs = TabView::new()
-            .tab("tracks", "Tracks", list_tracks)
-            .tab("albums", "Albums", list_albums)
-            .tab("artists", "Artists", list_artists)
-            .tab("playlists", "Playlists", list_playlists)
-            .tab("shows", "Podcasts", list_shows)
-            .tab("episodes", "Podcast Episodes", list_episodes);
+            .tab("tracks", list_tracks.with_title("Tracks"))
+            .tab("albums", list_albums.with_title("Albums"))
+            .tab("artists", list_artists.with_title("Artists"))
+            .tab("playlists", list_playlists.with_title("Playlists"))
+            .tab("shows", list_shows.with_title("Podcasts"))
+            .tab("episodes", list_episodes.with_title("Podcast Episodes"));
 
         let mut view = SearchResultsView {
             search_term,
@@ -109,7 +109,7 @@ impl SearchResultsView {
         _offset: usize,
         _append: bool,
     ) -> u32 {
-        if let Some(results) = spotify.track(&query) {
+        if let Some(results) = spotify.api.track(query) {
             let t = vec![(&results).into()];
             let mut r = tracks.write().unwrap();
             *r = t;
@@ -126,7 +126,9 @@ impl SearchResultsView {
         append: bool,
     ) -> u32 {
         if let Some(SearchResult::Tracks(results)) =
-            spotify.search(SearchType::Track, &query, 50, offset as u32)
+            spotify
+                .api
+                .search(SearchType::Track, query, 50, offset as u32)
         {
             let mut t = results.items.iter().map(|ft| ft.into()).collect();
             let mut r = tracks.write().unwrap();
@@ -148,7 +150,7 @@ impl SearchResultsView {
         _offset: usize,
         _append: bool,
     ) -> u32 {
-        if let Some(results) = spotify.album(&query) {
+        if let Some(results) = spotify.api.album(query) {
             let a = vec![(&results).into()];
             let mut r = albums.write().unwrap();
             *r = a;
@@ -165,7 +167,9 @@ impl SearchResultsView {
         append: bool,
     ) -> u32 {
         if let Some(SearchResult::Albums(results)) =
-            spotify.search(SearchType::Album, &query, 50, offset as u32)
+            spotify
+                .api
+                .search(SearchType::Album, query, 50, offset as u32)
         {
             let mut a = results.items.iter().map(|sa| sa.into()).collect();
             let mut r = albums.write().unwrap();
@@ -187,7 +191,7 @@ impl SearchResultsView {
         _offset: usize,
         _append: bool,
     ) -> u32 {
-        if let Some(results) = spotify.artist(&query) {
+        if let Some(results) = spotify.api.artist(query) {
             let a = vec![(&results).into()];
             let mut r = artists.write().unwrap();
             *r = a;
@@ -204,7 +208,9 @@ impl SearchResultsView {
         append: bool,
     ) -> u32 {
         if let Some(SearchResult::Artists(results)) =
-            spotify.search(SearchType::Artist, &query, 50, offset as u32)
+            spotify
+                .api
+                .search(SearchType::Artist, query, 50, offset as u32)
         {
             let mut a = results.items.iter().map(|fa| fa.into()).collect();
             let mut r = artists.write().unwrap();
@@ -226,7 +232,7 @@ impl SearchResultsView {
         _offset: usize,
         _append: bool,
     ) -> u32 {
-        if let Some(result) = spotify.playlist(&query).as_ref() {
+        if let Some(result) = spotify.api.playlist(query).as_ref() {
             let pls = vec![result.into()];
             let mut r = playlists.write().unwrap();
             *r = pls;
@@ -243,7 +249,9 @@ impl SearchResultsView {
         append: bool,
     ) -> u32 {
         if let Some(SearchResult::Playlists(results)) =
-            spotify.search(SearchType::Playlist, &query, 50, offset as u32)
+            spotify
+                .api
+                .search(SearchType::Playlist, query, 50, offset as u32)
         {
             let mut pls = results.items.iter().map(|sp| sp.into()).collect();
             let mut r = playlists.write().unwrap();
@@ -265,7 +273,7 @@ impl SearchResultsView {
         _offset: usize,
         _append: bool,
     ) -> u32 {
-        if let Some(result) = spotify.get_show(&query).as_ref() {
+        if let Some(result) = spotify.api.get_show(query).as_ref() {
             let pls = vec![result.into()];
             let mut r = shows.write().unwrap();
             *r = pls;
@@ -282,7 +290,9 @@ impl SearchResultsView {
         append: bool,
     ) -> u32 {
         if let Some(SearchResult::Shows(results)) =
-            spotify.search(SearchType::Show, &query, 50, offset as u32)
+            spotify
+                .api
+                .search(SearchType::Show, query, 50, offset as u32)
         {
             let mut pls = results.items.iter().map(|sp| sp.into()).collect();
             let mut r = shows.write().unwrap();
@@ -304,7 +314,7 @@ impl SearchResultsView {
         _offset: usize,
         _append: bool,
     ) -> u32 {
-        if let Some(result) = spotify.episode(&query).as_ref() {
+        if let Some(result) = spotify.api.episode(query).as_ref() {
             let e = vec![result.into()];
             let mut r = episodes.write().unwrap();
             *r = e;
@@ -321,7 +331,9 @@ impl SearchResultsView {
         append: bool,
     ) -> u32 {
         if let Some(SearchResult::Episodes(results)) =
-            spotify.search(SearchType::Episode, &query, 50, offset as u32)
+            spotify
+                .api
+                .search(SearchType::Episode, query, 50, offset as u32)
         {
             let mut e = results.items.iter().map(|se| se.into()).collect();
             let mut r = episodes.write().unwrap();
@@ -336,7 +348,7 @@ impl SearchResultsView {
         0
     }
 
-    fn perform_search<I: ListItem>(
+    fn perform_search<I: ListItem + Clone>(
         &self,
         handler: SearchHandler<I>,
         results: &Arc<RwLock<Vec<I>>>,
@@ -354,7 +366,8 @@ impl SearchResultsView {
 
             // register paginator if the API has more than one page of results
             if let Some(mut paginator) = paginator {
-                if total_items > results.read().unwrap().len() {
+                let loaded_items = results.read().unwrap().len();
+                if total_items > loaded_items {
                     let ev = ev.clone();
 
                     // paginator callback
@@ -363,7 +376,7 @@ impl SearchResultsView {
                         handler(&spotify, &results, &query, offset, true);
                         ev.trigger();
                     };
-                    paginator.set(total_items, Box::new(cb));
+                    paginator.set(loaded_items, total_items, Box::new(cb));
                 } else {
                     paginator.clear()
                 }
@@ -378,7 +391,7 @@ impl SearchResultsView {
         // check if API token refresh is necessary before commencing multiple
         // requests to avoid deadlock, as the parallel requests might
         // simultaneously try to refresh the token
-        self.spotify.refresh_token();
+        self.spotify.api.update_token();
 
         // is the query a Spotify URI?
         if let Some(uritype) = UriType::from_uri(&query) {

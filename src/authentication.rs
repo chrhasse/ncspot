@@ -1,13 +1,73 @@
-use cursive::traits::Boxable;
-use cursive::view::Identifiable;
+use std::process::Command;
+
+use cursive::traits::Resizable;
+use cursive::view::Nameable;
 use cursive::views::*;
-use cursive::{CbSink, Cursive, CursiveExt};
+use cursive::Cursive;
 
 use librespot_core::authentication::Credentials as RespotCredentials;
+use librespot_core::cache::Cache;
 use librespot_protocol::authentication::AuthenticationType;
+use log::info;
+
+use crate::config::{self, Config};
+use crate::spotify::Spotify;
+use crate::ui::create_cursive;
+
+/// Get credentials for use with librespot. This first tries to get cached credentials. If no cached
+/// credentials are available, it will either try to get them from the user configured commands, or
+/// if that fails, it will prompt the user on stdout.
+pub fn get_credentials(configuration: &Config) -> Result<RespotCredentials, String> {
+    let mut credentials = {
+        let cache = Cache::new(Some(config::cache_path("librespot")), None, None, None)
+            .expect("Could not create librespot cache");
+        let cached_credentials = cache.credentials();
+        match cached_credentials {
+            Some(c) => {
+                info!("Using cached credentials");
+                c
+            }
+            None => {
+                info!("Attempting to resolve credentials via username/password commands");
+                let creds = configuration
+                    .values()
+                    .credentials
+                    .clone()
+                    .unwrap_or_default();
+
+                match (creds.username_cmd, creds.password_cmd) {
+                    (Some(username_cmd), Some(password_cmd)) => {
+                        credentials_eval(&username_cmd, &password_cmd)?
+                    }
+                    _ => credentials_prompt(None)?,
+                }
+            }
+        }
+    };
+
+    while let Err(error) = Spotify::test_credentials(credentials.clone()) {
+        let error_msg = format!("{error}");
+        credentials = credentials_prompt(Some(error_msg))?;
+    }
+    Ok(credentials)
+}
+
+fn credentials_prompt(error_message: Option<String>) -> Result<RespotCredentials, String> {
+    if let Some(message) = error_message {
+        let mut siv = create_cursive().unwrap();
+        let dialog = cursive::views::Dialog::around(cursive::views::TextView::new(format!(
+            "Connection error:\n{message}"
+        )))
+        .button("Ok", |s| s.quit());
+        siv.add_layer(dialog);
+        siv.run();
+    }
+
+    create_credentials()
+}
 
 pub fn create_credentials() -> Result<RespotCredentials, String> {
-    let mut login_cursive = Cursive::default();
+    let mut login_cursive = create_cursive().unwrap();
     let info_buf = TextContent::new("Please login to Spotify\n");
     let info_view = Dialog::around(TextView::new_with_content(info_buf))
         .button("Login", move |s| {
@@ -49,26 +109,6 @@ pub fn create_credentials() -> Result<RespotCredentials, String> {
             s.pop_layer();
             s.add_layer(login_view);
         })
-        .button("Login with Facebook", |s| {
-            let urls: std::collections::HashMap<String, String> =
-                reqwest::get("https://login2.spotify.com/v1/config")
-                    .expect("didn't connect")
-                    .json()
-                    .expect("didn't parse");
-            // not a dialog to let people copy & paste the URL
-            let url_notice = TextView::new(format!("Browse to {}", &urls["login_url"]));
-
-            let controls = Button::new("Quit", Cursive::quit);
-
-            let login_view = LinearLayout::new(cursive::direction::Orientation::Vertical)
-                .child(url_notice)
-                .child(controls);
-            let url = &urls["login_url"];
-            webbrowser::open(url).ok();
-            auth_poller(&urls["credentials_url"], &s.cb_sink());
-            s.pop_layer();
-            s.add_layer(login_view)
-        })
         .button("Quit", Cursive::quit);
 
     login_cursive.add_layer(info_view);
@@ -80,56 +120,36 @@ pub fn create_credentials() -> Result<RespotCredentials, String> {
         .unwrap_or_else(|| Err("Didn't obtain any credentials".to_string()))
 }
 
-// TODO: better with futures?
-fn auth_poller(url: &str, app_sink: &CbSink) {
-    let app_sink = app_sink.clone();
-    let url = url.to_string();
-    std::thread::spawn(move || {
-        let timeout = std::time::Duration::from_secs(5 * 60);
-        let start_time = std::time::SystemTime::now();
-        while std::time::SystemTime::now()
-            .duration_since(start_time)
-            .unwrap_or(timeout)
-            < timeout
-        {
-            if let Ok(mut response) = reqwest::get(&url) {
-                if response.status() != reqwest::StatusCode::ACCEPTED {
-                    let result = match response.status() {
-                        reqwest::StatusCode::OK => {
-                            let creds = response
-                                .json::<AuthResponse>()
-                                .expect("Unable to parse")
-                                .credentials;
-                            Ok(creds)
-                        }
-
-                        _ => Err(format!(
-                            "Facebook auth failed with code {}: {}",
-                            response.status(),
-                            response.text().unwrap()
-                        )),
-                    };
-                    app_sink
-                        .send(Box::new(|s: &mut Cursive| {
-                            s.set_user_data(result);
-                            s.quit();
-                        }))
-                        .unwrap();
-                    return;
-                }
+pub fn credentials_eval(
+    username_cmd: &str,
+    password_cmd: &str,
+) -> Result<RespotCredentials, String> {
+    fn eval(cmd: &str) -> Result<Vec<u8>, String> {
+        println!("Executing \"{}\"", cmd);
+        let mut result = Command::new("sh")
+            .args(["-c", cmd])
+            .output()
+            .map_err(|e| e.to_string())?
+            .stdout;
+        if let Some(&last_byte) = result.last() {
+            if last_byte == 10 {
+                result.pop();
             }
-            std::thread::sleep(std::time::Duration::from_millis(1000));
         }
 
-        app_sink
-            .send(Box::new(|s: &mut Cursive| {
-                s.set_user_data::<Result<RespotCredentials, String>>(Err(
-                    "Timed out authenticating".to_string(),
-                ));
-                s.quit();
-            }))
-            .unwrap();
-    });
+        Ok(result)
+    }
+
+    println!("Retrieving username");
+    let username = String::from_utf8_lossy(&eval(username_cmd)?).into();
+    println!("Retrieving password");
+    let password = eval(password_cmd)?;
+
+    Ok(RespotCredentials {
+        username,
+        auth_type: AuthenticationType::AUTHENTICATION_USER_PASS,
+        auth_data: password,
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug)]
